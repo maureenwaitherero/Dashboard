@@ -15,19 +15,21 @@ GO
 --CREATE FACT TABLE FOR ADVENTUREWORKS DB
 CREATE VIEW FactSales AS
 SELECT S.OrderDate,
+	S.ShipDate,
+	S.ShipMethodID,
 	SD.SalesOrderID,
 	S.CustomerID,
 	S.SalesPersonID,
 	ST.TerritoryID,
 	SD.ProductID,
+	SD.SpecialOfferID,
 	PC.ProductCategoryID,
 	PSC.ProductSubcategoryID,
 	SD.OrderQty,
-	SD.UnitPrice,
-	SD.UnitPriceDiscount,
 	SD.LineTotal, -- (Per product subtotal.) Computed as UnitPrice * (1 - UnitPriceDiscount) *OrderQty.
-	PP.StandardCost, --Standard cost of the product.
-	SD.LineTotal-PP.StandardCost AS GrossMargin
+	PP.StandardCost * OrderQty as StandardCost, --Standard cost of the product.
+	S.TaxAmt,
+	S.Freight
 FROM Sales.SalesOrderHeader as S
 INNER JOIN Sales.SalesTerritory as ST ON ST.TerritoryID = S.TerritoryID
 INNER JOIN Sales.Customer AS SC ON SC.CustomerID = S.CustomerID 
@@ -40,29 +42,39 @@ GO
 --#########################################
 --DIM TABLE PRODUCT
 CREATE VIEW DimProduct AS
-SELECT PP.ProductID
-	,PP.Name AS Product_Name
-	,PP.Color
-	,PP.Size
-	,PP.Weight
-	,PP.Style
-	,PP.ListPrice
-	,PP.StandardCost
-	,PP.ListPrice - PP.StandardCost AS Expected_Margin
+SELECT PP.ProductID,
+	 PP.Name AS Product_Name,	
+	 PPM.ProductModelID,
+	 PPM.Name AS ProductModelName,
+	 SD.UnitPrice,
+	 SD.UnitPriceDiscount,
+	 PP.StandardCost,
+	 PP.DaysToManufacture,
+	 PP.ProductLine, --R = Road, M = Mountain, T = Touring, S = Standard
+	 PP.Style, --W = Womens, M = Mens, U = Universal
+	 PP.Color, --Product color
+	 PP.Size, --Product size
+	 PP.Class,
+	 PP.Weight
 FROM Production.Product AS PP
-INNER JOIN [Production].[ProductSubcategory] AS PSC  
-ON PSC.ProductSubcategoryID = PP.ProductSubcategoryID
-INNER JOIN [Production].[ProductCategory]  AS PC   
-ON PC.ProductCategoryID = PSC.ProductCategoryID
-GROUP BY PP.ProductID
-	,PP.Name
-	,PP.Color
-	,PP.Size
-	,PP.Weight
-	,PP.Style
-	,PP.ListPrice
-	,PP.StandardCost
-	,PP.ListPrice -PP.StandardCost
+INNER JOIN [Production].[ProductSubcategory] AS PSC  ON PSC.ProductSubcategoryID = PP.ProductSubcategoryID
+INNER JOIN Sales.SalesOrderDetail AS SD ON SD.ProductID = PP.ProductID
+INNER JOIN [Production].[ProductCategory]  AS PC ON PC.ProductCategoryID = PSC.ProductCategoryID
+INNER JOIN Production.ProductModel AS PPM ON PPM.ProductModelID = PP.ProductModelID
+GROUP BY PP.ProductID,
+	PP.Name,
+	PP.Color,
+	PP.Size,
+	PP.Weight,
+	PP.Style,
+	PP.StandardCost,
+	SD.UnitPrice,
+	SD.UnitPriceDiscount,
+	PP.DaysToManufacture,
+	PP.Class,
+	PPM.ProductModelID,
+	PP.ProductLine,
+	PPM.Name
 GO
 
 --#########################################
@@ -86,15 +98,24 @@ GO
 --#########################################
 --DIM TABLE SALES PERSON
 CREATE VIEW DimSalesPerson AS
- SELECT PPER.FirstName + ' '+ PPER.LastName AS FullName
-	,HE.BirthDate
-	,HE.Gender
-	,SSP.*	
+SELECT 	SSP.BusinessEntityID as SalesPersonID,
+	PPER.FirstName + ' '+ PPER.LastName AS FullName,
+	HE.BirthDate,
+	HE.Gender,
+	HE.JobTitle,
+	HE.MaritalStatus,
+	HE.OrganizationLevel,
+	HE.SickLeaveHours,
+	HE.VacationHours,
+	SSP.TerritoryID,
+	SSP.SalesQuota,
+	SSP.SalesYTD,
+	SSP.Bonus,
+	SSP.CommissionPct,
+	SSP.SalesLastYear
 FROM Person.Person AS PPER
-INNER JOIN Sales.SalesPerson AS SSP
-ON PPER.BusinessEntityID =  SSP.BusinessEntityID 
-INNER JOIN HumanResources.Employee AS HE
-ON PPER.BusinessEntityID = HE.BusinessEntityID
+INNER JOIN Sales.SalesPerson AS SSP ON PPER.BusinessEntityID =  SSP.BusinessEntityID 
+INNER JOIN HumanResources.Employee AS HE ON PPER.BusinessEntityID = HE.BusinessEntityID
 GO
 
 --#########################################
@@ -102,9 +123,8 @@ GO
 CREATE VIEW DimTerritory AS
 SELECT ST.*
 	,PCR.Name AS CountryName
-FROM Sales.SalesTerritory as ST
-INNER JOIN Person.CountryRegion AS PCR
-ON ST.CountryRegionCode =PCR.CountryRegionCode
+FROM Sales.SalesTerritory as ST 
+INNER JOIN Person.CountryRegion AS PCR ON ST.CountryRegionCode = PCR.CountryRegionCode
 GO
 --#########################################
 --DIM TABLE CUSTOMER
@@ -115,47 +135,38 @@ SELECT  DISTINCT  SC.CustomerID
 	,PCR.Name AS CountryName
 	,PPER.PersonType
 FROM Sales.Customer AS SC
-INNER JOIN Sales.SalesTerritory AS ST
-ON ST.TerritoryID = SC.TerritoryID
-INNER JOIN Person.CountryRegion AS PCR
-ON ST.CountryRegionCode =PCR.CountryRegionCode
-LEFT JOIN Person.Person AS PPER
-ON SC.PersonID = PPER.BusinessEntityID
+INNER JOIN Sales.SalesTerritory AS ST ON ST.TerritoryID = SC.TerritoryID
+INNER JOIN Person.CountryRegion AS PCR ON ST.CountryRegionCode =PCR.CountryRegionCode
+LEFT JOIN Person.Person AS PPER ON SC.PersonID = PPER.BusinessEntityID
 GO
 */
 CREATE VIEW DimCustomer AS
-SELECT DISTINCT SC.CustomerID
-	,PPER.PersonType
-	,PPER.FirstName +' '+PPER.LastName AS Full_Name	
-	,PA.AddressLine1
-	,PA.PostalCode
-	,PA.City
-	,ST.TerritoryID
-	,PCR.Name AS CountryName
+SELECT DISTINCT SC.CustomerID,
+	SC.PersonID,
+	SC.StoreID,	
+	SC.TerritoryID,
+	PPER.PersonType,
+	PPER.FirstName +' '+PPER.LastName AS Full_Name,	
+	PA.AddressLine1,
+	PA.PostalCode,
+	PA.City
 FROM Sales.SalesOrderHeader AS SOH
-INNER JOIN Person.Address AS PA
-ON PA.AddressID = SOH.BillToAddressID
-INNER JOIN Sales.Customer AS SC
-ON SOH.CustomerID = SC.CustomerID 
-INNER JOIN Sales.SalesTerritory AS ST
-ON ST.TerritoryID = SC.TerritoryID 
-INNER JOIN Person.CountryRegion AS PCR
-ON ST.CountryRegionCode =PCR.CountryRegionCode
-LEFT JOIN Person.Person AS PPER
-ON SC.PersonID = PPER.BusinessEntityID 
-INNER JOIN Sales.Store AS SST
-ON 	SC.StoreID =SST.BusinessEntityID
+INNER JOIN Person.Address AS PA ON PA.AddressID = SOH.BillToAddressID
+INNER JOIN Sales.Customer AS SC ON SOH.CustomerID = SC.CustomerID 
+INNER JOIN Sales.SalesTerritory AS ST ON ST.TerritoryID = SC.TerritoryID 
+INNER JOIN Person.CountryRegion AS PCR ON ST.CountryRegionCode =PCR.CountryRegionCode
+LEFT JOIN Person.Person AS PPER ON SC.PersonID = PPER.BusinessEntityID 
+INNER JOIN Sales.Store AS SST ON 	SC.StoreID =SST.BusinessEntityID
 GO
 
 --#########################################
 --DIM TABLE STORE
 CREATE VIEW DimStore AS
-SELECT distinct ST.SalesPersonID
-,ST.BusinessEntityID
-,ST.Name
+SELECT distinct ST.SalesPersonID,
+	ST.BusinessEntityID,
+	ST.Name
 FROM Sales.Store AS ST
 GO
-
 
 
 
