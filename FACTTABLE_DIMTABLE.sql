@@ -10,14 +10,13 @@ SELECT COUNT(*) FROM sys.tables --'sys.tables' returns a row for each user table
 GO
 
 /* CREATE FACT AND DIMENSION TABLES TO CREATE A STAR SCHEMA */
-
 --#########################################
 --CREATE FACT TABLE FOR ADVENTUREWORKS DB
 CREATE VIEW FactSales AS
-SELECT S.OrderDate,
+SELECT SD.SalesOrderID,
+	S.OrderDate,
 	S.ShipDate,
-	S.ShipMethodID,
-	SD.SalesOrderID,
+	S.ShipMethodID,	
 	S.CustomerID,
 	S.SalesPersonID,
 	ST.TerritoryID,
@@ -26,10 +25,14 @@ SELECT S.OrderDate,
 	PC.ProductCategoryID,
 	PSC.ProductSubcategoryID,
 	SD.OrderQty,
-	SD.LineTotal, -- (Per product subtotal.) Computed as UnitPrice * (1 - UnitPriceDiscount) *OrderQty.
-	PP.StandardCost * OrderQty as StandardCost, --Standard cost of the product.
+	SD.UnitPrice,
+	SD.UnitPriceDiscount,
+	S.Freight,
 	S.TaxAmt,
-	S.Freight
+	PP.StandardCost,
+	SD.LineTotal, -- (Per product subtotal.) Computed as UnitPrice * (1 - UnitPriceDiscount) *OrderQty.
+	PP.StandardCost * OrderQty as TotalStandardCost, --Standard cost of the product.
+	SD.LineTotal - (PP.StandardCost * OrderQty) as GrossProfit
 FROM Sales.SalesOrderHeader as S
 INNER JOIN Sales.SalesTerritory as ST ON ST.TerritoryID = S.TerritoryID
 INNER JOIN Sales.Customer AS SC ON SC.CustomerID = S.CustomerID 
@@ -42,12 +45,10 @@ GO
 --#########################################
 --DIM TABLE PRODUCT
 CREATE VIEW DimProduct AS
-SELECT PP.ProductID,
-	 PP.Name AS Product_Name,	
-	 PPM.ProductModelID,
-	 PPM.Name AS ProductModelName,
-	 SD.UnitPrice,
-	 SD.UnitPriceDiscount,
+SELECT DISTINCT PP.ProductID,
+	 PC.ProductCategoryID ,
+	 PP.ProductSubcategoryID,
+	 PP.Name AS Product_Name,
 	 PP.StandardCost,
 	 PP.DaysToManufacture,
 	 PP.ProductLine, --R = Road, M = Mountain, T = Touring, S = Standard
@@ -57,10 +58,11 @@ SELECT PP.ProductID,
 	 PP.Class,
 	 PP.Weight
 FROM Production.Product AS PP
-INNER JOIN [Production].[ProductSubcategory] AS PSC  ON PSC.ProductSubcategoryID = PP.ProductSubcategoryID
-INNER JOIN Sales.SalesOrderDetail AS SD ON SD.ProductID = PP.ProductID
-INNER JOIN [Production].[ProductCategory]  AS PC ON PC.ProductCategoryID = PSC.ProductCategoryID
-INNER JOIN Production.ProductModel AS PPM ON PPM.ProductModelID = PP.ProductModelID
+FULL JOIN [Production].[ProductSubcategory] AS PSC  ON PSC.ProductSubcategoryID = PP.ProductSubcategoryID
+FULL JOIN Sales.SalesOrderDetail AS SD ON SD.ProductID = PP.ProductID
+FULL JOIN [Production].[ProductCategory]  AS PC ON PC.ProductCategoryID = PSC.ProductCategoryID
+FULL JOIN Production.ProductModel AS PPM ON PPM.ProductModelID = PP.ProductModelID
+WHERE PP.ProductID IS NOT NULL
 GROUP BY PP.ProductID,
 	PP.Name,
 	PP.Color,
@@ -68,13 +70,14 @@ GROUP BY PP.ProductID,
 	PP.Weight,
 	PP.Style,
 	PP.StandardCost,
-	SD.UnitPrice,
-	SD.UnitPriceDiscount,
 	PP.DaysToManufacture,
 	PP.Class,
 	PPM.ProductModelID,
 	PP.ProductLine,
-	PPM.Name
+	PPM.Name,
+	PC.ProductCategoryID,
+	PC.ProductCategoryID ,
+	PP.ProductSubcategoryID
 GO
 
 --#########################################
@@ -90,8 +93,8 @@ GO
 --DIMENSION TABLE PRODUCT SUBCATEGORY
 CREATE VIEW DimProductSubCategory AS
 SELECT 
-	 PSC.ProductSubcategoryID 	
-	,PSC.Name AS ProductSubcategoryName
+	 PSC.ProductSubcategoryID, 	
+	 PSC.Name AS ProductSubcategoryName
 FROM [Production].[ProductSubcategory] AS PSC
 GO
 
@@ -121,33 +124,31 @@ GO
 --#########################################
 --DIM TABLE TERRITORY
 CREATE VIEW DimTerritory AS
-SELECT ST.*
-	,PCR.Name AS CountryName
+SELECT ST.*	
 FROM Sales.SalesTerritory as ST 
-INNER JOIN Person.CountryRegion AS PCR ON ST.CountryRegionCode = PCR.CountryRegionCode
 GO
+
+CREATE VIEW DimStateProvinceTerritory AS
+SELECT *
+FROM Person.StateProvince
+GO
+
 --#########################################
 --DIM TABLE CUSTOMER
-/*
-SELECT  DISTINCT  SC.CustomerID
-	,PPER.FirstName +' '+PPER.LastName AS Full_Name	
-	,ST.TerritoryID
-	,PCR.Name AS CountryName
-	,PPER.PersonType
-FROM Sales.Customer AS SC
-INNER JOIN Sales.SalesTerritory AS ST ON ST.TerritoryID = SC.TerritoryID
-INNER JOIN Person.CountryRegion AS PCR ON ST.CountryRegionCode =PCR.CountryRegionCode
-LEFT JOIN Person.Person AS PPER ON SC.PersonID = PPER.BusinessEntityID
-GO
-*/
+
 CREATE VIEW DimCustomer AS
-SELECT DISTINCT SC.CustomerID,
+SELECT DISTINCT PPER.BusinessEntityID,
+	SC.CustomerID,
 	SC.PersonID,
-	SC.StoreID,	
+	SC.StoreID,
 	SC.TerritoryID,
-	PPER.PersonType,
+	PA.StateProvinceID,
+	PPER.PersonType, 
 	PPER.FirstName +' '+PPER.LastName AS Full_Name,	
+	PPER.Suffix,
+	PPER.Title,		
 	PA.AddressLine1,
+	PA.AddressLine2,
 	PA.PostalCode,
 	PA.City
 FROM Sales.SalesOrderHeader AS SOH
@@ -155,8 +156,8 @@ INNER JOIN Person.Address AS PA ON PA.AddressID = SOH.BillToAddressID
 INNER JOIN Sales.Customer AS SC ON SOH.CustomerID = SC.CustomerID 
 INNER JOIN Sales.SalesTerritory AS ST ON ST.TerritoryID = SC.TerritoryID 
 INNER JOIN Person.CountryRegion AS PCR ON ST.CountryRegionCode =PCR.CountryRegionCode
-LEFT JOIN Person.Person AS PPER ON SC.PersonID = PPER.BusinessEntityID 
-INNER JOIN Sales.Store AS SST ON 	SC.StoreID =SST.BusinessEntityID
+INNER JOIN Person.StateProvince AS PSP ON PSP.CountryRegionCode = PCR.CountryRegionCode
+LEFT JOIN Person.Person AS PPER ON SC.PersonID = PPER.BusinessEntityID
 GO
 
 --#########################################
@@ -168,5 +169,29 @@ SELECT distinct ST.SalesPersonID,
 FROM Sales.Store AS ST
 GO
 
+
+--#########################################
+--DIM TABLE HUMAN RESOURCE
+CREATE VIEW DimEmployee AS
+SELECT
+	Employee.BusinessEntityID,
+	PPER.FirstName +' '+PPER.LastName AS Full_Name,
+	JobTitle,
+	BirthDate,
+	HireDate,
+	DepartmentHistory.StartDate,
+	DepartmentHistory.EndDate,
+	MaritalStatus,
+	Gender,	
+	SalariedFlag,
+	VacationHours,
+	SickLeaveHours,
+	CurrentFlag,	
+	DepartmentHistory.ShiftID,	
+	HRshift.Name AS Shift,
+	Department.Name	
+FROM  HumanResources.Employee AS Employee 
+INNER JOIN Person.Person AS PPER ON  PPER.BusinessEntityID = Employee.BusinessEntityID 
+INNER JOIN HumanResources.EmployeeDepartmentHistory AS DepartmentHistory ON  DepartmentHistory.BusinessEntityID = Employee.BusinessEntityIDINNER JOIN HumanResources.Shift AS HRshift ON HRshift .ShiftID = DepartmentHistory.ShiftIDINNER JOIN HumanResources.Department AS Department ON Department.DepartmentID = DepartmentHistory.DepartmentIDGO
 
 
